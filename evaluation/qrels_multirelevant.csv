@@ -1,0 +1,19 @@
+query_id,article_id,relevance,evidence,text_sha256,annotation_status
+multi_word_exact,795057,3,"показаны pandas, docxtpl и выпуск документов Word по шаблону из строк Excel",b3cc6fd47425e2a747ebe92b43c2311c7d0ed8a555865c86dc448cd2310bfb0a,seed_needs_review
+multi_word_exact,888510,3,показаны слияние Word с Excel и вариант массовой генерации отчётов на Python,f85fe740cb2da26fbf1523d335eb604177620083fa2c6c6a3f743d0174b07772,seed_needs_review
+multi_word_paraphrase,795057,3,"показаны pandas, docxtpl и выпуск документов Word по шаблону из строк Excel",b3cc6fd47425e2a747ebe92b43c2311c7d0ed8a555865c86dc448cd2310bfb0a,seed_needs_review
+multi_word_paraphrase,888510,3,показаны слияние Word с Excel и вариант массовой генерации отчётов на Python,f85fe740cb2da26fbf1523d335eb604177620083fa2c6c6a3f743d0174b07772,seed_needs_review
+multi_platform_exact,575278,3,"описаны RPA-процессы Power Automate Desktop, имитация действий пользователя и работа с Excel",28e668d96d0def10c1317a4a596ed73c6edbc6073dc91050477e21ff03bbc6b1,seed_needs_review
+multi_platform_exact,598005,2,"объясняются low-code, Power Apps, Power Automate и коннекторы к источникам данных",b122e9f229bafd027a1fb432187ec689e76aab09a04080c440cd315aaaee7b55,seed_needs_review
+multi_platform_exact,598079,3,приведены практические операции Power Apps и Power Automate для автоматизации бизнес-задач,fa9239197ce82af739171653f3901a78b3f3d13951c1a199249099038e06bd63,seed_needs_review
+multi_platform_paraphrase,575278,3,"описаны RPA-процессы Power Automate Desktop, имитация действий пользователя и работа с Excel",28e668d96d0def10c1317a4a596ed73c6edbc6073dc91050477e21ff03bbc6b1,seed_needs_review
+multi_platform_paraphrase,598005,2,"объясняются low-code, Power Apps, Power Automate и коннекторы к источникам данных",b122e9f229bafd027a1fb432187ec689e76aab09a04080c440cd315aaaee7b55,seed_needs_review
+multi_platform_paraphrase,598079,3,приведены практические операции Power Apps и Power Automate для автоматизации бизнес-задач,fa9239197ce82af739171653f3901a78b3f3d13951c1a199249099038e06bd63,seed_needs_review
+multi_excel_exact,717902,2,описано извлечение данных из книг Excel через ExecuteExcel4Macro и автоматизация HR-процесса,0d2d90fdfa3071e1f760e11729ee63b50bde3fdc6a37c27073ffca8031a15368,seed_needs_review
+multi_excel_exact,795057,2,"показаны pandas, docxtpl и выпуск документов Word по шаблону из строк Excel",b3cc6fd47425e2a747ebe92b43c2311c7d0ed8a555865c86dc448cd2310bfb0a,seed_needs_review
+multi_excel_exact,888510,2,показаны слияние Word с Excel и вариант массовой генерации отчётов на Python,f85fe740cb2da26fbf1523d335eb604177620083fa2c6c6a3f743d0174b07772,seed_needs_review
+multi_excel_exact,891074,2,приведены формулы МАКС и ФИЛЬТР для автоматического заполнения должностей по реестру Excel,d302110402fe78dac1abb4325b6565f670cd76ac2ee764aac919e5d8ab1b91b9,seed_needs_review
+multi_excel_paraphrase,717902,2,описано извлечение данных из книг Excel через ExecuteExcel4Macro и автоматизация HR-процесса,0d2d90fdfa3071e1f760e11729ee63b50bde3fdc6a37c27073ffca8031a15368,seed_needs_review
+multi_excel_paraphrase,795057,2,"показаны pandas, docxtpl и выпуск документов Word по шаблону из строк Excel",b3cc6fd47425e2a747ebe92b43c2311c7d0ed8a555865c86dc448cd2310bfb0a,seed_needs_review
+multi_excel_paraphrase,888510,2,показаны слияние Word с Excel и вариант массовой генерации отчётов на Python,f85fe740cb2da26fbf1523d335eb604177620083fa2c6c6a3f743d0174b07772,seed_needs_review
+multi_excel_paraphrase,891074,2,приведены формулы МАКС и ФИЛЬТР для автоматического заполнения должностей по реестру Excel,d302110402fe78dac1abb4325b6565f670cd76ac2ee764aac919e5d8ab1b91b9,seed_needs_review

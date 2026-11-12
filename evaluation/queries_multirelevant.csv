@@ -1,0 +1,7 @@
+query_id,category,query,relevant_article_ids
+multi_word_exact,exact,Как автоматизировать создание документов Word по шаблону с данными из Excel?,795057;888510
+multi_word_paraphrase,paraphrase,Нужно массово выпускать однотипные документы с разными ФИО и датами из таблицы. Как это сделать?,795057;888510
+multi_platform_exact,exact,"Какие задачи автоматизируют с помощью Microsoft Power Platform, Power Apps и Power Automate?",575278;598005;598079
+multi_platform_paraphrase,paraphrase,Как сотруднику автоматизировать повторяющиеся рабочие действия средствами Microsoft с минимумом программирования?,575278;598005;598079
+multi_excel_exact,exact,Примеры автоматизации работы с данными Excel: обработка таблиц и подготовка документов.,717902;795057;888510;891074
+multi_excel_paraphrase,paraphrase,Как сократить ручную работу с электронными таблицами и переносом данных в документы?,717902;795057;888510;891074

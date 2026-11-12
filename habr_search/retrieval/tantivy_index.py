@@ -136,6 +136,23 @@ class TantivySearch:
             raise ValueError('top_k должен быть от 1 до 20')
         return self.candidates(text, top_k)
 
+    def ranked_matches(self, text: str) -> tuple[tuple[int, float], ...]:
+        """для метрик читаем все совпадения без построения отрывков и лимита веб-выдачи."""
+        query_text = literal_query(text)
+        if not query_text:
+            return ()
+        query = self.index.parse_query(query_text, ['title', 'body'],
+                                       field_boosts={'title': 3.0, 'body': 1.0})
+        hits = self.searcher.search(query, limit=self.info.articles, count=False)
+        results: list[tuple[int, float]] = []
+        for score, address in hits.hits:
+            identifier: object = self.searcher.doc(address).get_first('article_id')
+            if type(identifier) is not int or identifier < 1:
+                raise ValueError('повреждён id статьи в tantivy')
+            results.append((identifier, float(score)))
+        # равные оценки имеют воспроизводимый порядок для mrr, map и ndcg
+        return tuple(sorted(results, key=lambda item: (-item[1], item[0])))
+
     def article_ids(self) -> frozenset[int]:
         """читаем id снимка один раз для проверки состава гибридного индекса."""
         hits = self.searcher.search(tantivy.Query.all_query(), limit=self.info.articles, count=False)

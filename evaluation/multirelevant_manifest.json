@@ -1,0 +1,12 @@
+{
+  "annotation_status": "content_checked_seed_labels_not_exhaustive",
+  "intended_use": "dev_diagnostic_only",
+  "queries": 6,
+  "topics": 3,
+  "target_articles": 7,
+  "min_relevant_per_query": 2,
+  "max_relevant_per_query": 4,
+  "independent_holdout": false,
+  "selection_method": "existing_corpus_content_not_new_retrieval_scores",
+  "notes": "это небольшой дополнительный набор; другие полезные статьи могут быть не размечены; не использовать как итоговый holdout"
+}

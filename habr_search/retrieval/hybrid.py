@@ -40,11 +40,9 @@ class FusedRank:
     lexical_rank: int | None
 
 
-def fuse_rankings(dense: Sequence[int], lexical: Sequence[int], top_k: int,
-                  config: HybridConfig = HybridConfig()) -> list[FusedRank]:
-    """rrf учитывает место статьи в каждом списке; одна статья появляется один раз."""
-    if not 1 <= top_k <= 20 or top_k > config.candidate_limit:
-        raise ValueError('top-k должен быть от 1 до 20 и не больше candidate-limit')
+def fuse_candidates(dense: Sequence[int], lexical: Sequence[int],
+                    config: HybridConfig = HybridConfig()) -> list[FusedRank]:
+    """сохраняем все оценки rrf для метрик; правила и порядок совпадают с веб-поиском."""
     for ids in (dense, lexical):
         if len(ids) > config.candidate_limit or len(ids) != len(set(ids)) or any(type(i) is not int or i < 1 for i in ids):
             raise ValueError('кандидаты должны иметь разные положительные id в пределах candidate-limit')
@@ -61,7 +59,15 @@ def fuse_rankings(dense: Sequence[int], lexical: Sequence[int], top_k: int,
     absent = config.candidate_limit + 1
     found.sort(key=lambda item: (-item.score, min(item.dense_rank or absent, item.lexical_rank or absent),
                                 item.dense_rank or absent, item.article_id))
-    return found[:top_k]
+    return found
+
+
+def fuse_rankings(dense: Sequence[int], lexical: Sequence[int], top_k: int,
+                  config: HybridConfig = HybridConfig()) -> list[FusedRank]:
+    """в интерфейсе по-прежнему возвращаем не больше двадцати статей."""
+    if not 1 <= top_k <= 20 or top_k > config.candidate_limit:
+        raise ValueError('top-k должен быть от 1 до 20 и не больше candidate-limit')
+    return fuse_candidates(dense, lexical, config)[:top_k]
 
 
 @dataclass(frozen=True)
