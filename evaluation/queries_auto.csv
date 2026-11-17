@@ -1,0 +1,25 @@
+query_id,category,query,relevant_article_ids
+macro_identifier,exact,ExecuteExcel4Macro,717902
+macro_quoted,quoted,"Как использовать ""ExecuteExcel4Macro"" для чтения закрытой книги Excel?",717902
+macro_paraphrase,paraphrase,Как собрать значения ячеек из нескольких закрытых книг Excel в одну таблицу?,717902
+vba_identifier,exact,Application.OnTime,677368
+vba_body_identifier,quoted,"""Worksheet_Change"" обновление Excel",677368
+vba_paraphrase,paraphrase,Как запускать макрос после обновления внешних данных в Excel без таймера?,677368
+otel_identifier,exact,OpenTelemetry Yii2,904654
+otel_quoted,quoted,"""метрики OpenTelemetry"" PHP",904654
+otel_paraphrase,paraphrase,Как собирать метрики из монолитного PHP приложения и передавать их в коллектор?,904654
+xcode_error,exact,"""You do not have required role or permission to perform an operation"" Xcode",1020052
+xcode_quoted,quoted,"""required role or permission"" TestFlight",1020052
+xcode_paraphrase,paraphrase,Почему Xcode не отправляет сборку в TestFlight даже с аккаунтом владельца?,1020052
+nginx_identifier,exact,nginx.exe,1092698
+nginx_quoted,quoted,"""Vodka"" nginx.exe Wine",1092698
+nginx_paraphrase,paraphrase,Как запускать Windows версию nginx на Linux быстрее Wine?,1092698
+dns_identifier,exact,cert-manager-webhook-freens,1089388
+dns_quoted,quoted,"""российский DNS"" Kubernetes",1089388
+dns_paraphrase,paraphrase,Как автоматически выпускать сертификаты для всех поддоменов Kubernetes через бесплатный DNS?,1089388
+dkms_identifier,exact,dkms.in,1089500
+dkms_error,quoted,"""Missing the module source directory"" DKMS",1089500
+dkms_paraphrase,paraphrase,Как сделать сообщение DKMS об отсутствующих исходниках модуля понятнее после обновления ядра?,1089500
+deadline_identifier,exact,asyncio.timeout_at,1094050
+deadline_quoted,quoted,"""очереди, ретраи и asyncio""",1094050
+deadline_paraphrase,paraphrase,Почему общий таймаут HTTP клиента не учитывает ожидание свободного соединения?,1094050

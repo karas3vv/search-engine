@@ -1,0 +1,25 @@
+{
+  "created_on": "2026-11-17",
+  "router_commit": "e0331a3",
+  "router_version": "rules-v1",
+  "query_count": 24,
+  "topics": 8,
+  "query_types": {
+    "exact": 8,
+    "quoted": 8,
+    "paraphrase": 8
+  },
+  "authors": "assistant_content_based",
+  "queries_selected_before_dense_rankings": true,
+  "label_status": "preliminary_seeds_only_not_exhaustive",
+  "no_answer_cases": 0,
+  "latency_query_count": 6,
+  "model_requests_quality": 24,
+  "model_requests_latency_default": 18,
+  "rules_sha256": "be80c37d1e17537868da31e94d5a122ba339881c121b4e2dbc46694073ad3f16",
+  "files_sha256": {
+    "queries_auto.csv": "3d571026c7d487c59ddf88d305cb7c27ba50285167b39308ceb91dc14aeaa595",
+    "qrels_auto.csv": "6fc996230ee3a87e8df0a954a2b74904a512d4ef76e40ee63ca30e7f080bbb53",
+    "queries_auto_latency.csv": "38bc733513a200e45bc7d2ba37ed722e362dd1a1047b0e611c0a32bb9547a1c9"
+  }
+}

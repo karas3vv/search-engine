@@ -1,0 +1,7 @@
+query_id,category,query,relevant_article_ids
+macro_identifier,exact,ExecuteExcel4Macro,717902
+otel_identifier,exact,OpenTelemetry Yii2,904654
+xcode_error,exact,"""You do not have required role or permission to perform an operation"" Xcode",1020052
+nginx_quoted,quoted,"""Vodka"" nginx.exe Wine",1092698
+dns_identifier,exact,cert-manager-webhook-freens,1089388
+deadline_paraphrase,paraphrase,Почему общий таймаут HTTP клиента не учитывает ожидание свободного соединения?,1094050

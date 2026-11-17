@@ -86,3 +86,7 @@ python -m habr_search.evaluation.evaluate_auto \
 - `habr_search/web/app.py`, `AutoService` — прежний API и освобождение ресурсов.
 - `habr_search/evaluation/evaluate_auto.py` — офлайн-проверка.
 - `tests/test_auto.py` — автономные сценарии без настоящей модели.
+
+## Проверка на новых запросах
+
+Подготовлен отдельный набор из 24 запросов и реальный HTTP-замер. Запуск одной командой: `./check_auto.sh`. Он делает 42 обращения к MWS; [состав набора, ограничения разметки и отчёты](evaluation/AUTO_CHECK.md).

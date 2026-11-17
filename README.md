@@ -85,6 +85,7 @@ python -m pyright
 - [Локальный Tantivy](docs/TANTIVY.md)
 - [Гибрид и бесплатное сравнение весов](docs/HYBRID.md)
 - [Адаптивный режим auto](docs/AUTO.md)
+- [Новые запросы и HTTP-замер auto](docs/evaluation/AUTO_CHECK.md)
 - [Архитектура](docs/ARCHITECTURE.md)
 - [Все метрики и сравнение трёх поисков](docs/evaluation/METRICS.md)
 - [Базовая оценка Hit/MRR](docs/evaluation/README.md)
