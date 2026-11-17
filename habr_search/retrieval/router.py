@@ -7,8 +7,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from habr_search.retrieval.hybrid import HybridConfig, fuse_candidates
-
 ROUTER_VERSION: str = 'rules-v1'
 WORDS: re.Pattern[str] = re.compile(r'[^\W_]+', re.UNICODE)
 IDENTIFIERS: re.Pattern[str] = re.compile(r'(?<!\w)[A-Za-z][A-Za-z0-9_]*(?:[.:/+\-][A-Za-z0-9_]+)*(?!\w)')
@@ -52,7 +50,7 @@ class RoutingFeatures:
 
 @dataclass(frozen=True)
 class RoutingDecision:
-    engine: Literal['bge-m3', 'hybrid']
+    engine: Literal['bge-m3', 'hybrid', 'ltr']
     reason: str
     features: RoutingFeatures = RoutingFeatures()
     version: str = ROUTER_VERSION
@@ -102,11 +100,3 @@ def choose_route(query: str, dense: Sequence[int], lexical: Sequence[RoutingHit]
     else:
         return RoutingDecision('hybrid', 'specific_title_match', features)
     return RoutingDecision('bge-m3', reason, features)
-
-
-def route_ranking(dense: Sequence[int], lexical: Sequence[int], decision: RoutingDecision,
-                  config: HybridConfig) -> tuple[int, ...]:
-    """одинаково применяем решение на сервере и при бесплатной офлайн-проверке."""
-    if decision.engine == 'bge-m3':
-        return tuple(dense)
-    return tuple(item.article_id for item in fuse_candidates(dense, lexical, config))

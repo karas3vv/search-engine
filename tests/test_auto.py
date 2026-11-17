@@ -24,8 +24,8 @@ from habr_search.evaluation.ranking_metrics import RankedDocument
 from habr_search.ingestion.chunking import ChunkingConfig, chunk_article
 from habr_search.ingestion.index import collection_name, ensure_collection, index_chunks
 from habr_search.model_profiles import BGE_M3
-from habr_search.retrieval.hybrid import HybridConfig, fuse_candidates
-from habr_search.retrieval.router import RouterConfig, RoutingHit, choose_route, query_identifiers, route_ranking
+from habr_search.retrieval.hybrid import HybridConfig, fuse_candidates, fuse_rankings
+from habr_search.retrieval.router import RouterConfig, RoutingHit, choose_route, query_identifiers
 from habr_search.retrieval.search import SearchResult
 from habr_search.retrieval.tantivy_index import LexicalCandidate, LexicalResult, build_index
 from habr_search.web.app import AutoService, TantivyService, create_app, main as web_main
@@ -39,14 +39,13 @@ class RouterTests(unittest.TestCase):
                                 [RoutingHit(2, 'Обработка таблиц', 20)])
         self.assertEqual(decision.engine, 'bge-m3')
         self.assertEqual(decision.reason, 'semantic_query')
-        self.assertEqual(route_ranking([1, 2], [2], decision, HybridConfig()), (1, 2))
 
     def test_exact_identifier_can_promote_lexical_answer(self) -> None:
         decision = choose_route('как использовать ExecuteExcel4Macro', [1, 2],
                                 [RoutingHit(2, 'Пример ExecuteExcel4Macro', 20)])
         self.assertEqual(decision.engine, 'hybrid')
         self.assertEqual(decision.features.title_coverage, 1.0)
-        self.assertEqual(route_ranking([1, 2], [2], decision, HybridConfig(dense_weight=4))[0], 2)
+        self.assertEqual(fuse_rankings([1, 2], [2], 2, HybridConfig(dense_weight=4))[0].article_id, 2)
         self.assertEqual(query_identifiers('ERR_CONNECTION_RESET'), ('err_connection_reset',))
         self.assertEqual(query_identifiers('Power Automate'), ())
         quoted = choose_route('как использовать "перенос данных"', [1, 2],

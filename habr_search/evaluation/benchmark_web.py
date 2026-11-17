@@ -1,4 +1,4 @@
-"""измеряем настоящий http-поиск трёх режимов; каждый запрос заново вызывает mws."""
+"""измеряем настоящий http-поиск разных режимов; каждый запрос заново вызывает mws."""
 from __future__ import annotations
 
 import argparse
@@ -24,6 +24,7 @@ from habr_search.embeddings import read_api_key
 from habr_search.evaluation.evaluate import EvaluationQuery, load_queries
 from habr_search.paths import DATA_DIR, PROJECT_ROOT
 from habr_search.web.app import SearchResponse
+from habr_search.retrieval.ltr import LearnedRanker
 
 ENGINES: tuple[str, ...] = ('bge-m3', 'hybrid', 'auto')
 COLUMNS: tuple[str, ...] = ('query_id', 'engine', 'repeat', 'status', 'http_ms', 'server_ms',
@@ -37,7 +38,8 @@ class Timing:
 
 
 def collect_timings(session: requests.Session, addresses: Mapping[str, str], queries: Sequence[EvaluationQuery],
-                    repeats: int, top_k: int, timeout: float, stream: TextIO) -> list[Timing]:
+                    repeats: int, top_k: int, timeout: float, stream: TextIO, *,
+                    engines: Sequence[str] = ENGINES) -> list[Timing]:
     """чередуем режимы и сразу сохраняем каждую попытку; платные post не повторяются."""
     if repeats < 1 or not 1 <= top_k <= 20 or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError('нужны положительные repeats/timeout и top-k от 1 до 20')
@@ -45,10 +47,13 @@ def collect_timings(session: requests.Session, addresses: Mapping[str, str], que
     writer.writerow(COLUMNS)
     stream.flush()
     timings: list[Timing] = []
+    order_template = tuple(engines)
+    if not order_template or len(set(order_template)) != len(order_template) or set(order_template) != set(addresses):
+        raise ValueError('нужны разные режимы с соответствующими адресами')
     for repeat in range(repeats):
         for index, query in enumerate(queries):
-            shift = (index + repeat) % len(ENGINES)
-            order = ENGINES[shift:] + ENGINES[:shift]
+            shift = (index + repeat) % len(order_template)
+            order = order_template[shift:] + order_template[:shift]
             for engine in order:
                 start = perf_counter()
                 try:
@@ -112,6 +117,7 @@ class CliArgs(argparse.Namespace):
     timeout: float
     qdrant_url: str
     tantivy_path: Path
+    ranker_model: Path | None
 
 
 def main() -> int:
@@ -125,21 +131,25 @@ def main() -> int:
     parser.add_argument('--timeout', type=float, default=300)
     parser.add_argument('--qdrant-url', default='http://127.0.0.1:6333')
     parser.add_argument('--tantivy-path', type=Path, default=DATA_DIR / 'tantivy')
+    parser.add_argument('--ranker-model', type=Path, help='добавить четвёртый режим ltr с обученной моделью')
     args = parser.parse_args(namespace=CliArgs())
     try:
         if args.output.exists():
             raise ValueError('папка замера уже существует; укажите новую --output')
+        engines = (*ENGINES, 'ltr') if args.ranker_model is not None else ENGINES
         if (args.limit < 0 or args.repeats < 1 or not 1 <= args.top_k <= 20
-                or not 1 <= args.base_port <= 65533 or not math.isfinite(args.timeout) or args.timeout <= 0):
+                or not 1 <= args.base_port <= 65536 - len(engines) or not math.isfinite(args.timeout) or args.timeout <= 0):
             raise ValueError('некорректные limit/repeats/top-k/base-port/timeout')
+        if args.ranker_model is not None:
+            LearnedRanker(args.ranker_model)  # проверяем артефакт до ключа и старта процессов
         queries = load_queries(args.queries)
         selected = queries[:args.limit] if args.limit else queries
         # порты проверяем до чтения ключа; занятые процессы не завершаем
         with ExitStack() as ports:
-            for port in range(args.base_port, args.base_port + len(ENGINES)):
+            for port in range(args.base_port, args.base_port + len(engines)):
                 listener = ports.enter_context(socket.socket())
                 listener.bind(('127.0.0.1', port))
-        planned = len(selected) * args.repeats * len(ENGINES)
+        planned = len(selected) * args.repeats * len(engines)
         print(f'план: {planned} новых поисковых запросов к mws; прогрева и автоматических повторов нет', flush=True)
         key = read_api_key()
         args.output.mkdir(parents=True)
@@ -149,6 +159,7 @@ def main() -> int:
             'query_ids': [query.query_id for query in selected], 'repeats': args.repeats,
             'top_k': args.top_k, 'planned_mws_requests': planned, 'warmups': 0,
             'engine_order': 'rotated_per_query_and_repeat', 'automatic_retries': False,
+            'engines': list(engines), 'ranker_model': str(args.ranker_model.resolve()) if args.ranker_model else None,
             'note': 'small_sample_no_load; p95_with_six_samples_is_maximum; models_called_independently',
         }
         metadata_path = args.output / 'metadata.json'
@@ -158,11 +169,13 @@ def main() -> int:
             session.trust_env = False  # локальный http не отправляем через прокси окружения
             addresses: dict[str, str] = {}
             environment = dict(os.environ, MWS_API_KEY=key)
-            for offset, engine in enumerate(ENGINES):
+            for offset, engine in enumerate(engines):
                 port = args.base_port + offset
                 command = [sys.executable, '-m', 'habr_search.web.app', '--engine', engine,
                            '--qdrant-url', args.qdrant_url, '--tantivy-path', str(args.tantivy_path),
                            '--port', str(port), '--timeout', str(args.timeout), '--without-spelling']
+                if engine == 'ltr' and args.ranker_model is not None:
+                    command += ['--ranker-model', str(args.ranker_model.resolve())]
                 process: subprocess.Popen[bytes] = subprocess.Popen(
                     command, cwd=PROJECT_ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
                 resources.callback(stop_server, process)
@@ -170,11 +183,11 @@ def main() -> int:
                 wait_ready(session, addresses[engine], process)
             with (args.output / 'requests.csv').open('x', encoding='utf-8', newline='') as stream:
                 timings = collect_timings(session, addresses, selected, args.repeats,
-                                           args.top_k, args.timeout + 10, stream)
+                                           args.top_k, args.timeout + 10, stream, engines=engines)
         with (args.output / 'summary.csv').open('x', encoding='utf-8', newline='') as stream:
             writer = csv.writer(stream)
             writer.writerow(['engine', 'requests', 'median_http_ms', 'p95_http_ms'])
-            for engine in ENGINES:
+            for engine in engines:
                 times = sorted(timing.http_ms for timing in timings if timing.engine == engine)
                 p95 = times[math.ceil(len(times) * 0.95) - 1]
                 writer.writerow([engine, len(times), median(times), p95])

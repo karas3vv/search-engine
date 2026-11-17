@@ -10,8 +10,10 @@ from typing import Literal
 from habr_search.ingestion.index import EmbeddingProvider
 from habr_search.model_profiles import BGE_M3
 from habr_search.retrieval.hybrid import FusedRank, HybridResult, HybridRetriever
+from habr_search.retrieval.ltr import LearnedRanker
+from habr_search.retrieval.ltr_features import FeatureCatalog, RankSignal
 from habr_search.retrieval.router import (
-    RouterConfig, RoutingDecision, RoutingHit, choose_route, route_ranking,
+    RouterConfig, RoutingDecision, RoutingHit, choose_route,
 )
 from habr_search.retrieval.search import search_articles
 from habr_search.retrieval.tantivy_index import LexicalCandidate, literal_query
@@ -38,6 +40,8 @@ class AutoDiagnostics:
     dense_weight: float
     lexical_weight: float
     lexical_wait_ms: float
+    ranker_model_sha256: str | None = None
+    ranker_ms: float | None = None
 
 
 @dataclass(frozen=True)
@@ -49,10 +53,16 @@ class AutoRun:
 class AutoRetriever:
     """один запрос сервиса использует один вызов mws и не больше одного локального задания."""
     def __init__(self, hybrid: HybridRetriever, embeddings: EmbeddingProvider,
-                 config: RouterConfig = RouterConfig()) -> None:
+                 config: RouterConfig = RouterConfig(), ranker: LearnedRanker | None = None) -> None:
         self.hybrid: HybridRetriever = hybrid
         self.embeddings: EmbeddingProvider = embeddings
         self.config: RouterConfig = config
+        self.ranker: LearnedRanker | None = ranker
+        self.catalog: FeatureCatalog | None = None
+        if ranker is not None:
+            ranker.validate_context(hybrid.name, hybrid.revision, hybrid.lexical.info.revision,
+                                    hybrid.config.candidate_limit)
+            self.catalog = hybrid.lexical.feature_catalog()
         self.executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='tantivy-auto')
         self.pending: Future[LexicalRun] | None = None
 
@@ -65,12 +75,13 @@ class AutoRetriever:
         found = self.hybrid.lexical.select_candidates(query, self.hybrid.config.candidate_limit)
         return LexicalRun(tuple(found), (perf_counter() - start) * 1000)
 
-    def search(self, query: str, prepared: str, top_k: int) -> AutoRun:
+    def search(self, query: str, prepared: str, top_k: int, *, prechecked: bool = False) -> AutoRun:
         """вызывается под блокировкой сервиса; qdrant и клиент mws остаются в его потоке."""
         literal_query(query)
         if not 1 <= top_k <= min(20, self.hybrid.config.candidate_limit):
             raise ValueError('top-k должен быть от 1 до 20 и не больше candidate-limit')
-        self.hybrid.check_context()
+        if not prechecked:
+            self.hybrid.check_context()
         future: Future[LexicalRun] | None = None
         if self.pending is None or self.pending.done():
             future = self.executor.submit(self._lexical, query)
@@ -106,22 +117,34 @@ class AutoRetriever:
         dense_ids = [item.article_id for item in dense]
         decision = (choose_route(query, dense_ids,
                                 [RoutingHit(item.article_id, item.title, item.score) for item in lexical], self.config)
-                    if status == 'ready' else RoutingDecision('bge-m3', f'lexical_{status}'))
-        ids = route_ranking(dense_ids, [item.article_id for item in lexical], decision, self.hybrid.config)[:top_k]
-        dense_by_id = {item.article_id: item for item in dense}
+                    if status == 'ready' and self.ranker is None else RoutingDecision('bge-m3', f'lexical_{status}'))
+        learned: list[FusedRank] | None = None
+        ranker_ms: float | None = None
+        if status == 'ready' and self.ranker is not None and self.catalog is not None:
+            ranker_start = perf_counter()
+            try:
+                learned = self.ranker.rank(query, [RankSignal(item.article_id, item.score) for item in dense],
+                                           [RankSignal(item.article_id, item.score) for item in lexical], self.catalog)
+                decision = RoutingDecision('ltr', 'learned_ranking', version='lightgbm-v1')
+            except Exception as exc:
+                decision = RoutingDecision('bge-m3', 'ranker_error', version='lightgbm-v1')
+                LOGGER.warning('ranker_error type=%s', type(exc).__name__)
+            ranker_ms = (perf_counter() - ranker_start) * 1000
         # в режиме модели сохраняем её косинусные оценки и семантические отрывки
-        if decision.engine == 'bge-m3':
-            ranks = [FusedRank(identifier, dense_by_id[identifier].score, index, None)
-                     for index, identifier in enumerate(ids, 1)]
+        if learned is not None:
+            ranks = learned[:top_k]
+        elif decision.engine == 'bge-m3':
+            ranks = [FusedRank(item.article_id, item.score, index, None)
+                     for index, item in enumerate(dense[:top_k], 1)]
         else:
             from habr_search.retrieval.hybrid import fuse_rankings
             ranks = fuse_rankings(dense_ids, [item.article_id for item in lexical], top_k, self.hybrid.config)
         routing_ms = (perf_counter() - start) * 1000
         start = perf_counter()
         try:
-            results = self.hybrid.render(query, dense, lexical if decision.engine == 'hybrid' else (), ranks)
+            results = self.hybrid.render(query, dense, lexical if decision.engine in ('hybrid', 'ltr') else (), ranks)
         except Exception as exc:
-            if decision.engine != 'hybrid':
+            if decision.engine not in ('hybrid', 'ltr'):
                 raise
             status = 'error'
             decision = RoutingDecision('bge-m3', 'lexical_snippet_error', decision.features)
@@ -132,9 +155,10 @@ class AutoRetriever:
         snippets_ms = (perf_counter() - start) * 1000
         self.hybrid.check_context()
         diagnostics = AutoDiagnostics(decision, status, embedding_ms, qdrant_ms, lexical_ms,
-                                      routing_ms, snippets_ms, self.hybrid.config.dense_weight,
+                                      routing_ms, snippets_ms, 0.0 if decision.engine == 'ltr' else self.hybrid.config.dense_weight,
                                       self.hybrid.config.lexical_weight if decision.engine == 'hybrid' else 0.0,
-                                      self.config.lexical_wait_ms)
+                                      self.config.lexical_wait_ms,
+                                      self.ranker.model_hash if self.ranker is not None else None, ranker_ms)
         # журнал не содержит исходного запроса, ключей, текстов статей или векторов
         LOGGER.info('auto_search route=%s reason=%s version=%s lexical_status=%s '
                     'embedding_ms=%.1f qdrant_ms=%.1f lexical_ms=%s routing_ms=%.1f snippets_ms=%.1f '

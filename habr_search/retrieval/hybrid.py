@@ -6,10 +6,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from time import perf_counter
 
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 from qdrant_client.conversions import common_types as qdrant_types
 
-from habr_search.index_version import index_revision
+from habr_search.index_version import UNVERSIONED, VERSION_KEY, index_revision
 from habr_search.model_profiles import BGE_M3
 from habr_search.retrieval.search import SearchResult, search_articles, validate_collection
 from habr_search.retrieval.tantivy_index import LexicalCandidate, TantivySearch, literal_query
@@ -123,16 +123,23 @@ class HybridRetriever:
 
     def check_context(self) -> None:
         """изменившийся векторный индекс требует повторного запуска сервиса."""
-        if (self.store.count(self.name, exact=True).count != self.points
-                or index_revision(self.store, self.name) != self.revision):
+        information = self.store.get_collection(self.name)
+        vectors = information.config.params.vectors
+        if (not isinstance(vectors, models.VectorParams) or vectors.size != BGE_M3.vector_size
+                or vectors.distance != models.Distance.COSINE):
+            raise ValueError('коллекция использует другую размерность или метрику')
+        metadata: dict[str, object] = dict(information.config.metadata or {})
+        if (metadata.get(VERSION_KEY, UNVERSIONED) != self.revision
+                or self.store.count(self.name, exact=True).count != self.points):
             raise ValueError('индекс qdrant изменился; проверьте актуальность tantivy и перезапустите поиск')
 
-    def search(self, query: str, vector: list[float], top_k: int = 5) -> HybridRun:
+    def search(self, query: str, vector: list[float], top_k: int = 5, *, prechecked: bool = False) -> HybridRun:
         """ищем кандидатов и выбираем отрывок tantivy, если он доступен."""
         literal_query(query)  # ограничения локального поиска проверяем до выполнения запросов
         if not 1 <= top_k <= min(20, self.config.candidate_limit):
             raise ValueError('top-k должен быть от 1 до 20 и не больше candidate-limit')
-        self.check_context()
+        if not prechecked:
+            self.check_context()
         start = perf_counter()
         dense = search_articles(self.store, self.name, vector, self.config.candidate_limit, BGE_M3.vector_size)
         dense_ms = (perf_counter() - start) * 1000

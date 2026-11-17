@@ -13,13 +13,16 @@ from collections import Counter
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import tantivy
 
 from habr_search.ingestion.prepare import DEFAULT_SOURCE, PreparationStats, iter_prepared_articles
 from habr_search.paths import DATA_DIR
 from habr_search.retrieval.spelling import MAX_QUERY_CHARS, save_dictionary, vocabulary_words
+
+if TYPE_CHECKING:
+    from habr_search.retrieval.ltr_features import FeatureCatalog
 
 DEFAULT_INDEX: Path = DATA_DIR / 'tantivy'
 FORMAT_VERSION: int = 1
@@ -167,6 +170,24 @@ class TantivySearch:
     def article_ids(self) -> frozenset[int]:
         """читаем id снимка один раз для проверки состава гибридного индекса."""
         return frozenset(self.article_titles())
+
+    def feature_catalog(self) -> FeatureCatalog:
+        """для ltr один раз готовим признаки полных текстов именно из текущего снимка."""
+        from habr_search.retrieval.ltr_features import FeatureCatalog, FeatureDocument
+        documents: dict[int, FeatureDocument] = {}
+        hits = self.searcher.search(tantivy.Query.all_query(), limit=self.info.articles, count=False)
+        for _, address in hits.hits:
+            document = self.searcher.doc(address)
+            identifier: object = document.get_first('article_id')
+            title: object = document.get_first('title')
+            body: object = document.get_first('body')
+            if (type(identifier) is not int or identifier < 1 or identifier in documents
+                    or not isinstance(title, str) or not isinstance(body, str)):
+                raise ValueError('повреждён документ каталога признаков ltr')
+            documents[identifier] = FeatureDocument.from_text(title, body)
+        if len(documents) != self.info.articles:
+            raise ValueError('каталог признаков ltr не совпал со снимком')
+        return FeatureCatalog(documents)
 
     def article_titles(self) -> dict[int, str]:
         """для офлайн-маршрутизации читаем заголовки из той же версии снимка."""

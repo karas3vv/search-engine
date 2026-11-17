@@ -192,9 +192,9 @@ def load_records(folder: Path, context: ComparisonContext) -> dict[str, Comparis
     return records
 
 
-def load_judgments(context: ComparisonContext, path: Path | None) -> dict[str, dict[int, int]]:
+def load_judgments(context: ComparisonContext, path: Path | None, *, include_seeds: bool = True) -> dict[str, dict[int, int]]:
     """расширяем начальную разметку; явный ноль позволяет снять ошибочную исходную метку."""
-    judgments = {q.query_id: dict.fromkeys(q.relevant_ids, 1) for q in context.cases}
+    judgments = {q.query_id: dict.fromkeys(q.relevant_ids, 1) if include_seeds else dict[int, int]() for q in context.cases}
     if path is None:
         return judgments
     seen: set[tuple[str, int]] = set()
