@@ -12,7 +12,7 @@ from qdrant_client.conversions import common_types as qdrant_types
 from habr_search.index_version import index_revision
 from habr_search.model_profiles import BGE_M3
 from habr_search.retrieval.search import SearchResult, search_articles, validate_collection
-from habr_search.retrieval.tantivy_index import LexicalResult, TantivySearch, literal_query
+from habr_search.retrieval.tantivy_index import LexicalCandidate, TantivySearch, literal_query
 
 
 @dataclass(frozen=True)
@@ -82,7 +82,7 @@ class HybridResult:
 @dataclass(frozen=True)
 class HybridRun:
     dense: tuple[SearchResult, ...]
-    lexical: tuple[LexicalResult, ...]
+    lexical: tuple[LexicalCandidate, ...]
     results: tuple[HybridResult, ...]
     dense_ms: float
     lexical_ms: float
@@ -137,11 +137,20 @@ class HybridRetriever:
         dense = search_articles(self.store, self.name, vector, self.config.candidate_limit, BGE_M3.vector_size)
         dense_ms = (perf_counter() - start) * 1000
         start = perf_counter()
-        lexical = self.lexical.candidates(query, self.config.candidate_limit)
+        lexical = self.lexical.select_candidates(query, self.config.candidate_limit)
         lexical_ms = (perf_counter() - start) * 1000
         ranks = fuse_rankings([item.article_id for item in dense], [item.article_id for item in lexical], top_k, self.config)
+        results = self.render(query, dense, lexical, ranks)
+        self.check_context()
+        return HybridRun(tuple(dense), tuple(lexical), tuple(results), dense_ms, lexical_ms)
+
+    def render(self, query: str, dense: Sequence[SearchResult], lexical: Sequence[LexicalCandidate],
+               ranks: Sequence[FusedRank]) -> list[HybridResult]:
+        """строим отрывки после ранжирования, сохраняя общий формат всех режимов."""
         dense_by_id = {item.article_id: item for item in dense}
-        lexical_by_id = {item.article_id: item for item in lexical}
+        selected = {rank.article_id for rank in ranks}
+        local_results = self.lexical.render_candidates(query, [item for item in lexical if item.article_id in selected])
+        lexical_by_id = {item.article_id: item for item in local_results}
         results: list[HybridResult] = []
         for rank in ranks:
             local = lexical_by_id.get(rank.article_id)
@@ -152,5 +161,4 @@ class HybridRetriever:
                 text = ' '.join(semantic.text.split())
                 results.append(HybridResult(rank.article_id, semantic.title, semantic.url,
                                             text[:500] + ('…' if len(text) > 500 else ''), rank.score))
-        self.check_context()
-        return HybridRun(tuple(dense), tuple(lexical), tuple(results), dense_ms, lexical_ms)
+        return results

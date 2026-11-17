@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -38,6 +39,16 @@ class LexicalResult:
     url: str
     snippet: str
     score: float  # bm25 не ограничен диапазоном косинусного сходства
+
+
+@dataclass(frozen=True)
+class LexicalCandidate:
+    """храним адрес в неизменяемом снимке; отрывок читаем после выбора итоговых статей."""
+    article_id: int
+    title: str
+    url: str
+    score: float
+    address: tantivy.DocAddress
 
 
 def register_analyzer(index: tantivy.Index) -> None:
@@ -155,17 +166,27 @@ class TantivySearch:
 
     def article_ids(self) -> frozenset[int]:
         """читаем id снимка один раз для проверки состава гибридного индекса."""
+        return frozenset(self.article_titles())
+
+    def article_titles(self) -> dict[int, str]:
+        """для офлайн-маршрутизации читаем заголовки из той же версии снимка."""
         hits = self.searcher.search(tantivy.Query.all_query(), limit=self.info.articles, count=False)
-        ids: set[int] = set()
+        titles: dict[int, str] = {}
         for _, address in hits.hits:
-            article_id: object = self.searcher.doc(address).get_first('article_id')
-            if type(article_id) is not int or article_id < 1 or article_id in ids:
+            document = self.searcher.doc(address)
+            article_id: object = document.get_first('article_id')
+            title: object = document.get_first('title')
+            if type(article_id) is not int or article_id < 1 or article_id in titles or not isinstance(title, str):
                 raise ValueError('повреждены или повторяются id статей tantivy')
-            ids.add(article_id)
-        return frozenset(ids)
+            titles[article_id] = title
+        return titles
 
     def candidates(self, text: str, limit: int = 20) -> list[LexicalResult]:
-        """гибриду доступен более глубокий список, размер обычной выдачи не меняется."""
+        """обычный локальный поиск готовит отрывки только для запрошенной выдачи."""
+        return self.render_candidates(text, self.select_candidates(text, limit))
+
+    def select_candidates(self, text: str, limit: int = 20) -> list[LexicalCandidate]:
+        """выбираем кандидатов без генерации отрывков для гибрида и auto."""
         if not 1 <= limit <= 100:
             raise ValueError('число кандидатов должно быть от 1 до 100')
         query_text = literal_query(text)
@@ -174,9 +195,7 @@ class TantivySearch:
         query = self.index.parse_query(query_text, ['title', 'body'],
                                        field_boosts={'title': 3.0, 'body': 1.0})
         hits = self.searcher.search(query, limit=limit, count=False)
-        snippets = tantivy.SnippetGenerator.create(self.searcher, query, self.index.schema, 'body')
-        snippets.set_max_num_chars(350)
-        results: list[LexicalResult] = []
+        results: list[LexicalCandidate] = []
         for raw_score, address in hits.hits:
             document = self.searcher.doc(address)
             article_id: object = document.get_first('article_id')
@@ -184,10 +203,24 @@ class TantivySearch:
             url: object = document.get_first('url')
             score: object = raw_score
             if (type(article_id) is not int or not isinstance(title, str) or not isinstance(url, str)
-                    or not isinstance(score, (float, int))):
+                    or not isinstance(score, (float, int)) or not math.isfinite(score) or score < 0):
                 raise ValueError('повреждённый документ индекса')
-            fragment = snippets.snippet_from_doc(document).fragment()
-            results.append(LexicalResult(article_id, title, url, ' '.join(fragment.split()), float(score)))
+            results.append(LexicalCandidate(article_id, title, url, float(score), address))
+        return sorted(results, key=lambda item: (-item.score, item.article_id))
+
+    def render_candidates(self, text: str, candidates: list[LexicalCandidate]) -> list[LexicalResult]:
+        """генерируем отрывки только для переданных статей из текущего снимка."""
+        if not candidates:
+            return []
+        query = self.index.parse_query(literal_query(text), ['title', 'body'],
+                                       field_boosts={'title': 3.0, 'body': 1.0})
+        snippets = tantivy.SnippetGenerator.create(self.searcher, query, self.index.schema, 'body')
+        snippets.set_max_num_chars(350)
+        results: list[LexicalResult] = []
+        for candidate in candidates:
+            fragment = snippets.snippet_from_doc(self.searcher.doc(candidate.address)).fragment()
+            results.append(LexicalResult(candidate.article_id, candidate.title, candidate.url,
+                                         ' '.join(fragment.split()), candidate.score))
         return results
 
 

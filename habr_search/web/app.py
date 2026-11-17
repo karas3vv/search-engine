@@ -33,6 +33,8 @@ from qdrant_client import QdrantClient
 from habr_search.index_version import index_revision
 from habr_search.paths import DATA_DIR
 from habr_search.retrieval.hybrid import HybridConfig, HybridRetriever
+from habr_search.retrieval.auto import AutoDiagnostics, AutoRetriever, LOGGER as AUTO_LOGGER
+from habr_search.retrieval.router import RouterConfig
 from habr_search.retrieval.tantivy_index import literal_query
 from habr_search.model_profiles import BGE_M3, DEFAULT_PROFILE, ModelProfile, deployment_name
 
@@ -78,6 +80,7 @@ class SearchResponse(BaseModel):
     suggested_query: str | None = None
     alternatives: dict[str, list[str]] = Field(default_factory=dict)
     deferred_suggestion: bool = False  # локальная подсказка загружается после выдачи
+    diagnostics: AutoDiagnostics | None = None  # решение auto и времена веток доступны для проверки
 
 
 # сведения об индексе и доступности словаря на момент запуска сервиса
@@ -194,6 +197,12 @@ class SearchService:
                                            snippet=snippet, score=item.score))
         return results
 
+    def _search_prepared(self, query: str, prepared: str,
+                         top_k: int) -> tuple[list[ArticleResponse], AutoDiagnostics | None]:
+        """обычные режимы сохраняют один вызов модели без фоновых заданий."""
+        vector = self.embeddings.embed([prepared])[0]
+        return self._retrieve(query, vector, top_k), None
+
     # ищем исходную фразу и отдельно предлагаем исправление; замена требует явного флага api
     def search(self, request: SearchRequest) -> SearchResponse:
         if not self.lock.acquire(blocking=False):
@@ -205,12 +214,12 @@ class SearchService:
             prepared = build_query(query)
             if self.tokenizer.count(prepared) > self.profile.query_max_tokens:
                 raise ValueError(f'запрос превышает {self.profile.query_max_tokens} токенов')
-            # только этот вызов обращается к модели; повторов и фоновых поисков нет
-            vector = self.embeddings.embed([prepared])[0]
-            results = self._retrieve(query, vector, request.top_k)
+            # вызываем модель один раз; auto параллельно запускает только локальную ветку
+            results, diagnostics = self._search_prepared(query, prepared, request.top_k)
             return SearchResponse(original_query=request.query, used_query=query, corrected=query != request.query.strip(),
                                   results=results, elapsed_ms=round((perf_counter() - start) * 1000, 1),
-                                  alternatives=alternatives, suggested_query=suggested_query, deferred_suggestion=deferred)
+                                  alternatives=alternatives, suggested_query=suggested_query,
+                                  deferred_suggestion=deferred, diagnostics=diagnostics)
         finally:
             self.lock.release()
 
@@ -300,6 +309,26 @@ class HybridService(SearchService):
                                 snippet=item.snippet, score=item.score) for item in run.results]
 
 
+class AutoService(HybridService):
+    """меняем только выполнение поиска; проверка фразы и подсказки остаются общими."""
+    def __init__(self, store: QdrantClient, name: str, tokenizer: TextTokenizer,
+                 embeddings: EmbeddingProvider, local: TantivyService,
+                 config: HybridConfig = HybridConfig(dense_weight=4.0),
+                 router: RouterConfig = RouterConfig()) -> None:
+        super().__init__(store, name, tokenizer, embeddings, local, config)
+        self.auto: AutoRetriever = AutoRetriever(self.hybrid, embeddings, router)
+
+    def _search_prepared(self, query: str, prepared: str,
+                         top_k: int) -> tuple[list[ArticleResponse], AutoDiagnostics | None]:
+        run = self.auto.search(query, prepared, top_k)
+        return [ArticleResponse(article_id=item.article_id, title=item.title, url=item.url,
+                                snippet=item.snippet, score=item.score) for item in run.results], run.diagnostics
+
+    def close(self) -> None:
+        self.auto.close()
+        super().close()
+
+
 # настройки подключений, локальных файлов и подготовки поискового запроса
 @dataclass(frozen=True)
 class WebConfig:
@@ -330,7 +359,8 @@ def connect_service(config: WebConfig) -> SearchService:
 
 
 def connect_hybrid_service(config: WebConfig, path: Path, spelling: bool,
-                           hybrid_config: HybridConfig = HybridConfig()) -> HybridService:
+                           hybrid_config: HybridConfig = HybridConfig(), *, adaptive: bool = False,
+                           router: RouterConfig = RouterConfig()) -> HybridService:
     """сбой подготовки освобождает подключения до первого платного запроса."""
     with ExitStack() as resources:
         store = connect_store(config.store)
@@ -340,7 +370,8 @@ def connect_hybrid_service(config: WebConfig, path: Path, spelling: bool,
         tokenizer = load_tokenizer(config.tokenizer_file, BGE_M3)
         embeddings = EmbeddingsClient(config.embeddings)
         resources.callback(embeddings.close)
-        service = HybridService(store, name, tokenizer, embeddings, local, hybrid_config)
+        service = (AutoService(store, name, tokenizer, embeddings, local, hybrid_config, router) if adaptive
+                   else HybridService(store, name, tokenizer, embeddings, local, hybrid_config))
         service.resources = resources.pop_all()
         return service
 
@@ -432,14 +463,15 @@ class CliArgs(argparse.Namespace):
     min_score: float | None
     candidate_limit: int
     rrf_k: float
-    dense_weight: float
+    dense_weight: float | None
     lexical_weight: float
+    auto_lexical_wait_ms: float
 
 
 # читаем настройки и ключ в терминале, затем запускаем приложение на локальном адресе
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--engine', choices=['bge-m3', 'tantivy', 'hybrid'], default='bge-m3')
+    parser.add_argument('--engine', choices=['bge-m3', 'tantivy', 'hybrid', 'auto'], default='bge-m3')
     parser.add_argument('--tantivy-path', type=Path, default=DATA_DIR / 'tantivy')
     location = parser.add_mutually_exclusive_group()
     location.add_argument('--qdrant-url')
@@ -453,8 +485,10 @@ def main() -> int:
     parser.add_argument('--overlap-tokens', type=int, default=128)
     parser.add_argument('--candidate-limit', type=int, default=20, help='кандидатов каждого источника в гибриде')
     parser.add_argument('--rrf-k', type=float, default=60.0, help='сглаживание мест в гибриде')
-    parser.add_argument('--dense-weight', type=float, default=1.0, help='вклад bge-m3 в гибриде')
+    parser.add_argument('--dense-weight', type=float, help='вклад bge-m3: 1 для hybrid, 4 для auto')
     parser.add_argument('--lexical-weight', type=float, default=1.0, help='вклад tantivy в гибриде')
+    parser.add_argument('--auto-lexical-wait-ms', type=float, default=5.0,
+                        help='дополнительное ожидание tantivy после модели в auto, мс')
     parser.add_argument('--min-score', type=float, help='проверенный порог сходства; по умолчанию выключен')
     args: CliArgs = parser.parse_args(namespace=CliArgs())
     if not 1 <= args.port <= 65535 or not math.isfinite(args.timeout) or args.timeout <= 0:
@@ -468,10 +502,12 @@ def main() -> int:
             uvicorn.run(create_app(lambda: TantivyService(args.tantivy_path, not args.without_spelling)),
                         host='127.0.0.1', port=args.port, log_level='warning', access_log=False)
             return 0
-        hybrid_config = HybridConfig(args.candidate_limit, args.rrf_k, args.dense_weight, args.lexical_weight)
-        if args.engine == 'hybrid' and (args.min_score is not None or args.spelling_db is not None):
-            raise ValueError('гибрид не использует min-score и spelling-db; словарь берётся из tantivy')
-        if args.engine == 'hybrid' and args.candidate_limit < 20:
+        dense_weight = args.dense_weight if args.dense_weight is not None else (4.0 if args.engine == 'auto' else 1.0)
+        hybrid_config = HybridConfig(args.candidate_limit, args.rrf_k, dense_weight, args.lexical_weight)
+        router = RouterConfig(lexical_wait_ms=args.auto_lexical_wait_ms)
+        if args.engine in ('hybrid', 'auto') and (args.min_score is not None or args.spelling_db is not None):
+            raise ValueError('hybrid и auto не используют min-score и spelling-db; словарь берётся из tantivy')
+        if args.engine in ('hybrid', 'auto') and args.candidate_limit < 20:
             raise ValueError('для веб-выдачи до 20 статей candidate-limit должен быть не меньше 20')
         validate_min_score(args.min_score)
         store = resolve_qdrant_config(args.qdrant_url, args.qdrant_path)
@@ -488,8 +524,12 @@ def main() -> int:
         print(f'страница поиска: http://127.0.0.1:{args.port}')
         print('получение выдачи обращается к mws; открытие страницы и проверка опечаток — нет')
         factory: Callable[[], SearchBackend]
-        if args.engine == 'hybrid':
-            factory = lambda: connect_hybrid_service(config, args.tantivy_path, not args.without_spelling, hybrid_config)
+        if args.engine in ('hybrid', 'auto'):
+            if args.engine == 'auto':
+                logging.basicConfig(level=logging.WARNING, format='%(message)s')
+                AUTO_LOGGER.setLevel(logging.INFO)
+            factory = lambda: connect_hybrid_service(config, args.tantivy_path, not args.without_spelling, hybrid_config,
+                                                      adaptive=args.engine == 'auto', router=router)
         else:
             factory = lambda: connect_service(config)
         uvicorn.run(create_app(factory), host='127.0.0.1', port=args.port,
