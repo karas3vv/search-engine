@@ -25,10 +25,11 @@ from habr_search.ingestion.chunking import ChunkingConfig, chunk_article
 from habr_search.ingestion.index import collection_name, ensure_collection, index_chunks
 from habr_search.model_profiles import BGE_M3
 from habr_search.retrieval.hybrid import HybridConfig, fuse_candidates, fuse_rankings
+from habr_search.retrieval.hybrid import HybridConfig
 from habr_search.retrieval.router import RouterConfig, RoutingHit, choose_route, query_identifiers
 from habr_search.retrieval.search import SearchResult
 from habr_search.retrieval.tantivy_index import LexicalCandidate, LexicalResult, build_index
-from habr_search.web.app import AutoService, TantivyService, create_app, main as web_main
+from habr_search.web.app import HybridService, TantivyService, create_app, main as web_main
 from tests.test_chunking import CharacterTokenizer, article
 from tests.test_evaluate import FakeEmbeddings
 
@@ -101,17 +102,18 @@ class AutoTests(unittest.TestCase):
         self.embeddings.calls.clear()
         self.dense = [SearchResult(d.id, d.title, d.url, d.text, 1 - d.id / 10) for d in self.documents]
 
-    def make_service(self, wait_ms: float = 100.0) -> AutoService:
-        service = AutoService(self.store, self.name, CharacterTokenizer(), self.embeddings,
-                              TantivyService(self.index), router=RouterConfig(lexical_wait_ms=wait_ms))
+    def make_service(self, wait_ms: float = 100.0) -> HybridService:
+        service = HybridService(self.store, self.name, CharacterTokenizer(), self.embeddings,
+                                TantivyService(self.index), HybridConfig(dense_weight=4.0),
+                                router=RouterConfig(lexical_wait_ms=wait_ms))
         self.addCleanup(service.close)
         return service
 
     def test_api_decision_and_final_snippets_use_one_embedding(self) -> None:
         service = self.make_service()
-        with patch('habr_search.retrieval.auto.search_articles', return_value=self.dense), \
+        with patch('habr_search.retrieval.parallel.search_articles', return_value=self.dense), \
                 patch.object(service.local.backend, 'render_candidates', wraps=service.local.backend.render_candidates) as render, \
-                self.assertLogs('habr_search.auto', level='INFO') as logs, \
+                self.assertLogs('habr_search.parallel', level='INFO') as logs, \
                 TestClient(create_app(lambda: service)) as client:
             response = client.post('/api/search', json={'query': 'ExecuteExcel4Macro', 'top_k': 1})
             self.assertEqual(response.status_code, 200)
@@ -146,7 +148,7 @@ class AutoTests(unittest.TestCase):
 
         with patch.object(service.local.backend, 'select_candidates', side_effect=local), \
                 patch.object(self.embeddings, 'embed', side_effect=remote), \
-                patch('habr_search.retrieval.auto.search_articles', return_value=self.dense), \
+                patch('habr_search.retrieval.parallel.search_articles', return_value=self.dense), \
                 TestClient(create_app(lambda: service)) as client:
             response = client.post('/api/search', json={'query': 'документы'})
             self.assertEqual(response.status_code, 200)
@@ -172,7 +174,7 @@ class AutoTests(unittest.TestCase):
 
         with patch.object(service.local.backend, 'select_candidates', side_effect=slow) as local, \
                 patch.object(self.embeddings, 'embed', side_effect=remote), \
-                patch('habr_search.retrieval.auto.search_articles', return_value=self.dense):
+                patch('habr_search.retrieval.parallel.search_articles', return_value=self.dense):
             # клиент закрывается только после освобождения заблокированного чтения
             with TestClient(create_app(lambda: service)) as client:
                 try:
@@ -189,8 +191,8 @@ class AutoTests(unittest.TestCase):
     def test_lexical_errors_degrade_but_model_errors_are_not_hidden(self) -> None:
         service = self.make_service()
         with patch.object(service.local.backend, 'select_candidates', side_effect=ValueError('bad index')), \
-                patch('habr_search.retrieval.auto.search_articles', return_value=self.dense), \
-                self.assertLogs('habr_search.auto', level='WARNING'), \
+                patch('habr_search.retrieval.parallel.search_articles', return_value=self.dense), \
+                self.assertLogs('habr_search.parallel', level='WARNING'), \
                 TestClient(create_app(lambda: service)) as client:
             data = client.post('/api/search', json={'query': 'ExecuteExcel4Macro'}).json()
             self.assertEqual(data['diagnostics']['decision']['reason'], 'lexical_error')
@@ -208,8 +210,8 @@ class AutoTests(unittest.TestCase):
             return render(query, candidates)
 
         with patch.object(service.local.backend, 'render_candidates', side_effect=broken), \
-                patch('habr_search.retrieval.auto.search_articles', return_value=self.dense), \
-                self.assertLogs('habr_search.auto', level='WARNING'), \
+                patch('habr_search.retrieval.parallel.search_articles', return_value=self.dense), \
+                self.assertLogs('habr_search.parallel', level='WARNING'), \
                 TestClient(create_app(lambda: service)) as client:
             data = client.post('/api/search', json={'query': 'ExecuteExcel4Macro', 'top_k': 1}).json()
             self.assertEqual(data['results'][0]['article_id'], 1)

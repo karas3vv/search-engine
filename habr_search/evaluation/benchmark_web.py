@@ -23,8 +23,7 @@ import requests
 from habr_search.embeddings import read_api_key
 from habr_search.evaluation.evaluate import EvaluationQuery, load_queries
 from habr_search.paths import DATA_DIR, PROJECT_ROOT
-from habr_search.web.app import SearchResponse
-from habr_search.retrieval.ltr import LearnedRanker
+from habr_search.web.app import SearchResponse, WEB_HYBRID_CONFIG
 
 ENGINES: tuple[str, ...] = ('bge-m3', 'hybrid', 'auto')
 COLUMNS: tuple[str, ...] = ('query_id', 'engine', 'repeat', 'status', 'http_ms', 'server_ms',
@@ -117,7 +116,6 @@ class CliArgs(argparse.Namespace):
     timeout: float
     qdrant_url: str
     tantivy_path: Path
-    ranker_model: Path | None
 
 
 def main() -> int:
@@ -131,17 +129,14 @@ def main() -> int:
     parser.add_argument('--timeout', type=float, default=300)
     parser.add_argument('--qdrant-url', default='http://127.0.0.1:6333')
     parser.add_argument('--tantivy-path', type=Path, default=DATA_DIR / 'tantivy')
-    parser.add_argument('--ranker-model', type=Path, help='добавить четвёртый режим ltr с обученной моделью')
     args = parser.parse_args(namespace=CliArgs())
     try:
         if args.output.exists():
             raise ValueError('папка замера уже существует; укажите новую --output')
-        engines = (*ENGINES, 'ltr') if args.ranker_model is not None else ENGINES
+        engines = ENGINES
         if (args.limit < 0 or args.repeats < 1 or not 1 <= args.top_k <= 20
                 or not 1 <= args.base_port <= 65536 - len(engines) or not math.isfinite(args.timeout) or args.timeout <= 0):
             raise ValueError('некорректные limit/repeats/top-k/base-port/timeout')
-        if args.ranker_model is not None:
-            LearnedRanker(args.ranker_model)  # проверяем артефакт до ключа и старта процессов
         queries = load_queries(args.queries)
         selected = queries[:args.limit] if args.limit else queries
         # порты проверяем до чтения ключа; занятые процессы не завершаем
@@ -159,7 +154,7 @@ def main() -> int:
             'query_ids': [query.query_id for query in selected], 'repeats': args.repeats,
             'top_k': args.top_k, 'planned_mws_requests': planned, 'warmups': 0,
             'engine_order': 'rotated_per_query_and_repeat', 'automatic_retries': False,
-            'engines': list(engines), 'ranker_model': str(args.ranker_model.resolve()) if args.ranker_model else None,
+            'engines': list(engines), 'hybrid_candidate_limit': WEB_HYBRID_CONFIG.candidate_limit,
             'note': 'small_sample_no_load; p95_with_six_samples_is_maximum; models_called_independently',
         }
         metadata_path = args.output / 'metadata.json'
@@ -174,8 +169,6 @@ def main() -> int:
                 command = [sys.executable, '-m', 'habr_search.web.app', '--engine', engine,
                            '--qdrant-url', args.qdrant_url, '--tantivy-path', str(args.tantivy_path),
                            '--port', str(port), '--timeout', str(args.timeout), '--without-spelling']
-                if engine == 'ltr' and args.ranker_model is not None:
-                    command += ['--ranker-model', str(args.ranker_model.resolve())]
                 process: subprocess.Popen[bytes] = subprocess.Popen(
                     command, cwd=PROJECT_ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
                 resources.callback(stop_server, process)

@@ -50,7 +50,7 @@ class RoutingFeatures:
 
 @dataclass(frozen=True)
 class RoutingDecision:
-    engine: Literal['bge-m3', 'hybrid', 'ltr']
+    engine: Literal['bge-m3', 'hybrid']
     reason: str
     features: RoutingFeatures = RoutingFeatures()
     version: str = ROUTER_VERSION

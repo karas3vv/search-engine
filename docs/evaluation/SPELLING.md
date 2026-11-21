@@ -26,7 +26,7 @@ python -m habr_search.retrieval.spellcheck build --qdrant-url http://127.0.0.1:6
 ```bash
 python -m habr_search.retrieval.spellcheck build --qdrant-url http://127.0.0.1:6333 \
   --dictionary data/spelling-v2.sqlite3
-python -m habr_search.web.app --qdrant-url http://127.0.0.1:6333 --spelling-db data/spelling-v2.sqlite3
+python -m habr_search.web.app --engine bge-m3 --qdrant-url http://127.0.0.1:6333 --spelling-db data/spelling-v2.sqlite3
 ```
 
 Для коллекции, созданной старой версией индексатора, используется отметка `unversioned` до первой записи новым индексатором. Это не требует пересчитывать векторы. Проверка отслеживает обновления через наш индексатор; при ручном изменении точек через Dashboard или другой скрипт нужно также менять `habr_index_revision` в метаданных коллекции и пересобирать словарь. Версия не заменяет хеширование произвольных внешних изменений.

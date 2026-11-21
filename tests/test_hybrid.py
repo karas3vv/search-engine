@@ -10,6 +10,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from unittest.mock import patch
 
 from fastapi import FastAPI
@@ -24,7 +25,7 @@ from habr_search.ingestion.index import collection_name, ensure_collection, inde
 from habr_search.embeddings import DEFAULT_URL
 from habr_search.model_profiles import BGE_M3
 from habr_search.retrieval.hybrid import HybridConfig, HybridRetriever, fuse_rankings
-from habr_search.retrieval.tantivy_index import TantivySearch, build_index
+from habr_search.retrieval.tantivy_index import LexicalCandidate, TantivySearch, build_index
 from habr_search.web.app import HybridService, TantivyService, create_app, main as web_main
 from tests.test_chunking import CharacterTokenizer, article
 from tests.test_evaluate import FakeEmbeddings
@@ -128,20 +129,41 @@ class HybridTests(unittest.TestCase):
             self.assertEqual(response.status_code, 400)
             self.assertEqual(len(self.embeddings.calls), 0)
 
-    def test_web_cli_uses_m3_and_local_dictionary(self) -> None:
+    def test_default_web_cli_runs_both_branches_and_fuses_their_results(self) -> None:
         self.store.close()
         provider = FakeEmbeddings(1024)
+        lexical_started, embedding_started = Event(), Event()
+        select = TantivySearch.select_candidates
+        embed = provider.embed
+
+        def local(backend: TantivySearch, query: str, limit: int) -> list[LexicalCandidate]:
+            self.assertEqual(limit, 50)
+            lexical_started.set()
+            self.assertTrue(embedding_started.wait(2))
+            return select(backend, query, limit)
+
+        def remote(texts: list[str]) -> list[list[float]]:
+            embedding_started.set()
+            self.assertTrue(lexical_started.wait(2))
+            return embed(texts)
 
         def serve(app: FastAPI, **_options: object) -> None:
             with TestClient(app) as client:
                 response = client.post('/api/search', json={'query': 'Python'})
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.json()['results'][0]['article_id'], 1)
-                self.assertTrue(response.json()['deferred_suggestion'])
+                data = response.json()
+                self.assertEqual(data['results'][0]['article_id'], 1)
+                self.assertEqual(data['diagnostics']['decision']['reason'], 'rrf')
+                self.assertEqual(data['diagnostics']['lexical_status'], 'ready')
+                self.assertIsNone(data['diagnostics']['lexical_wait_ms'])
+                self.assertGreater(data['results'][0]['score'], 1 / 61)
+                self.assertTrue(data['deferred_suggestion'])
 
         with patch.dict(os.environ, {}, clear=True), redirect_stdout(io.StringIO()), \
-                patch('sys.argv', ['web', '--engine', 'hybrid', '--qdrant-path', str(self.store_path),
+                patch('sys.argv', ['web', '--qdrant-path', str(self.store_path),
                                    '--tantivy-path', str(self.local_path)]), \
+                patch.object(TantivySearch, 'select_candidates', autospec=True, side_effect=local), \
+                patch.object(provider, 'embed', side_effect=remote), \
                 patch('habr_search.web.app.read_api_key', return_value='test'), \
                 patch('habr_search.web.app.load_tokenizer', return_value=CharacterTokenizer()), \
                 patch('habr_search.web.app.EmbeddingsClient', return_value=provider) as constructor, \

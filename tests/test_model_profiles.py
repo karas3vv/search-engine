@@ -141,7 +141,7 @@ class ModelProfileTests(unittest.TestCase):
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.json()['results'][0]['article_id'], 1)
 
-            with patch('sys.argv', ['web', '--qdrant-path', str(database),
+            with patch('sys.argv', ['web', '--engine', 'bge-m3', '--qdrant-path', str(database),
                                     '--spelling-db', str(dictionary)]), \
                     patch('habr_search.web.app.read_api_key', return_value='test'), \
                     patch('habr_search.web.app.load_tokenizer', return_value=CharacterTokenizer()), \

@@ -23,7 +23,7 @@ python -m habr_search.web.app --engine tantivy
 python -m habr_search.retrieval.tantivy_index search --query "автоматизация документов"
 ```
 
-Запустить основной поиск через MWS:
+Запустить гибрид с Tantivy и MWS:
 
 ```bash
 ./run.sh

@@ -1,7 +1,0 @@
-query_id,topic
-multi_word_exact,word_documents
-multi_word_paraphrase,word_documents
-multi_platform_exact,microsoft_platform
-multi_platform_paraphrase,microsoft_platform
-multi_excel_exact,excel_processing
-multi_excel_paraphrase,excel_processing
