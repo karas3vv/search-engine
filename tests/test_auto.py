@@ -12,6 +12,7 @@ from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import patch
 
+import requests
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from qdrant_client import QdrantClient
@@ -26,6 +27,7 @@ from habr_search.ingestion.index import collection_name, ensure_collection, inde
 from habr_search.model_profiles import BGE_M3
 from habr_search.retrieval.hybrid import HybridConfig, fuse_candidates, fuse_rankings
 from habr_search.retrieval.hybrid import HybridConfig
+from habr_search.retrieval.rerank import Reranker, RerankError
 from habr_search.retrieval.router import RouterConfig, RoutingHit, choose_route, query_identifiers
 from habr_search.retrieval.search import SearchResult
 from habr_search.retrieval.tantivy_index import LexicalCandidate, LexicalResult, build_index
@@ -129,6 +131,24 @@ class AutoTests(unittest.TestCase):
             before = len(self.embeddings.calls)
             self.assertEqual(client.post('/api/search', json={'query': 'a' * 81}).status_code, 400)
             self.assertEqual(len(self.embeddings.calls), before)
+
+    def test_hybrid_reranks_before_top_k_and_falls_back_on_timeout(self) -> None:
+        with requests.Session() as session:
+            reranker = Reranker(session, 'test', 'test', 3)
+            service = HybridService(self.store, self.name, CharacterTokenizer(), self.embeddings,
+                                    TantivyService(self.index), reranker=reranker)
+            with TestClient(create_app(lambda: service)) as client, patch.object(reranker, 'rank') as rank:
+                rank.side_effect = lambda query, items: list(reversed(items))
+                request = {'query': 'обработка', 'top_k': 1}
+                result = client.post('/api/search', json=request).json()
+                base = result['diagnostics']['rrf_ids']
+                self.assertEqual(len(base), 3)
+                self.assertEqual(result['diagnostics']['rerank_status'], 'applied')
+                self.assertEqual([r['article_id'] for r in result['results']], [base[-1]])
+                rank.side_effect = RerankError('timeout')
+                result = client.post('/api/search', json=request).json()
+                self.assertEqual(result['diagnostics']['rerank_status'], 'error')
+                self.assertEqual([r['article_id'] for r in result['results']], [base[0]])
 
     def test_local_branch_starts_while_embedding_is_running(self) -> None:
         service = self.make_service()

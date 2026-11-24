@@ -14,6 +14,7 @@ from threading import Lock
 from time import perf_counter
 from typing import Protocol
 
+import requests
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -35,6 +36,7 @@ from habr_search.index_version import index_revision
 from habr_search.paths import DATA_DIR
 from habr_search.retrieval.hybrid import HybridConfig, HybridRetriever
 from habr_search.retrieval.parallel import ParallelDiagnostics, ParallelRetriever, LOGGER as SEARCH_LOGGER
+from habr_search.retrieval.rerank import Reranker
 from habr_search.retrieval.router import RouterConfig
 from habr_search.retrieval.tantivy_index import literal_query
 from habr_search.model_profiles import BGE_M3, DEFAULT_PROFILE, ModelProfile, deployment_name
@@ -283,13 +285,14 @@ class HybridService(SearchService):
     """сохраняем общий путь с одним вызовом модели и отдельной локальной подсказкой."""
     def __init__(self, store: QdrantClient, name: str, tokenizer: TextTokenizer,
                  embeddings: EmbeddingProvider, local: TantivyService,
-                 config: HybridConfig = WEB_HYBRID_CONFIG, *, router: RouterConfig | None = None) -> None:
+                 config: HybridConfig = WEB_HYBRID_CONFIG, *, router: RouterConfig | None = None,
+                 reranker: Reranker | None = None) -> None:
         super().__init__(store, name, tokenizer, embeddings, None, profile=BGE_M3)
         self.local: TantivyService = local
         self.hybrid: HybridRetriever = HybridRetriever(store, name, local.backend, config)
         self.status.articles = local.health().articles
         self.status.spelling_available = local.health().spelling_available
-        self.retriever: ParallelRetriever = ParallelRetriever(self.hybrid, embeddings, router)
+        self.retriever: ParallelRetriever = ParallelRetriever(self.hybrid, embeddings, router, reranker)
 
     def search(self, request: SearchRequest) -> SearchResponse:
         if request.top_k > self.hybrid.config.candidate_limit:
@@ -355,7 +358,8 @@ def connect_service(config: WebConfig) -> SearchService:
 
 def connect_hybrid_service(config: WebConfig, path: Path, spelling: bool,
                            hybrid_config: HybridConfig = WEB_HYBRID_CONFIG, *,
-                           router: RouterConfig | None = None) -> HybridService:
+                           router: RouterConfig | None = None, rerank_model: str | None = None,
+                           rerank_depth: int = 10) -> HybridService:
     """сбой подготовки освобождает подключения до первого платного запроса."""
     with ExitStack() as resources:
         store = connect_store(config.store)
@@ -365,7 +369,12 @@ def connect_hybrid_service(config: WebConfig, path: Path, spelling: bool,
         tokenizer = load_tokenizer(config.tokenizer_file, BGE_M3)
         embeddings = EmbeddingsClient(config.embeddings)
         resources.callback(embeddings.close)
-        service = HybridService(store, name, tokenizer, embeddings, local, hybrid_config, router=router)
+        reranker = None
+        if rerank_model is not None:
+            session = resources.enter_context(requests.Session())
+            reranker = Reranker(session, config.embeddings.api_key, rerank_model, rerank_depth)
+        service = HybridService(store, name, tokenizer, embeddings, local, hybrid_config,
+                                router=router, reranker=reranker)
         service.resources = resources.pop_all()
         return service
 
@@ -459,12 +468,16 @@ class CliArgs(argparse.Namespace):
     rrf_k: float
     dense_weight: float | None
     lexical_weight: float
+    rerank_model: str | None
+    rerank_depth: int | None
     auto_lexical_wait_ms: float
 
 
 # читаем настройки и ключ в терминале, затем запускаем приложение на локальном адресе
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--rerank-model', help='деплоймент реранкера MWS для гибридного поиска')
+    parser.add_argument('--rerank-depth', type=int, choices=range(2, 21), help='число статей для реранкера (по умолчанию 10)')
     parser.add_argument('--engine', choices=['bge-m3', 'tantivy', 'hybrid', 'auto'], default='hybrid')
     parser.add_argument('--tantivy-path', type=Path, default=DATA_DIR / 'tantivy')
     location = parser.add_mutually_exclusive_group()
@@ -488,6 +501,10 @@ def main() -> int:
     if not 1 <= args.port <= 65535 or not math.isfinite(args.timeout) or args.timeout <= 0:
         parser.error('нужны допустимый port и положительный конечный timeout')
     try:
+        if args.rerank_model is not None and (args.engine != 'hybrid' or not args.rerank_model.strip()):
+            raise ValueError('--rerank-model требует hybrid и непустое имя деплоймента')
+        if args.rerank_depth is not None and args.rerank_model is None:
+            raise ValueError('--rerank-depth требует --rerank-model')
         if args.engine == 'tantivy':
             if args.min_score is not None or args.qdrant_url or args.qdrant_path:
                 raise ValueError('параметры qdrant и min-score относятся к семантическому режиму')
@@ -528,7 +545,8 @@ def main() -> int:
             logging.basicConfig(level=logging.WARNING, format='%(message)s')
             SEARCH_LOGGER.setLevel(logging.INFO)
             factory = partial(connect_hybrid_service, config, args.tantivy_path, not args.without_spelling,
-                              hybrid_config, router=router)
+                              hybrid_config, router=router, rerank_model=args.rerank_model,
+                              rerank_depth=args.rerank_depth or 10)
         else:
             factory = lambda: connect_service(config)
         uvicorn.run(create_app(factory), host='127.0.0.1', port=args.port,

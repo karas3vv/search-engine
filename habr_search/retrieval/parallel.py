@@ -10,6 +10,7 @@ from typing import Literal
 from habr_search.ingestion.index import EmbeddingProvider
 from habr_search.model_profiles import BGE_M3
 from habr_search.retrieval.hybrid import FusedRank, HybridResult, HybridRetriever, fuse_rankings
+from habr_search.retrieval.rerank import Reranker, RerankError
 from habr_search.retrieval.router import (
     RouterConfig, RoutingDecision, RoutingHit, choose_route,
 )
@@ -39,6 +40,10 @@ class ParallelDiagnostics:
     lexical_weight: float
     lexical_wait_ms: float | None  # в обычном гибриде ждём обе ветки
 
+    rerank_status: Literal['off', 'applied', 'skipped', 'error'] = 'off'
+    rerank_ms: float = 0.0
+    rrf_ids: tuple[int, ...] = ()  # исходный порядок для парной оценки на тех же кандидатах
+
 
 @dataclass(frozen=True)
 class ParallelRun:
@@ -49,7 +54,8 @@ class ParallelRun:
 class ParallelRetriever:
     """один запрос сервиса использует один вызов mws и не больше одного локального задания."""
     def __init__(self, hybrid: HybridRetriever, embeddings: EmbeddingProvider,
-                 router: RouterConfig | None = None) -> None:
+                 router: RouterConfig | None = None, reranker: Reranker | None = None) -> None:
+        self.reranker = reranker
         self.hybrid: HybridRetriever = hybrid
         self.embeddings: EmbeddingProvider = embeddings
         self.router: RouterConfig | None = router
@@ -119,7 +125,8 @@ class ParallelRetriever:
         if decision.engine == 'bge-m3':
             ranks = dense_ranks
         else:
-            ranks = fuse_rankings(dense_ids, [item.article_id for item in lexical], top_k, self.hybrid.config)
+            depth = max(top_k, self.reranker.depth) if self.reranker else top_k
+            ranks = fuse_rankings(dense_ids, [item.article_id for item in lexical], depth, self.hybrid.config)
         routing_ms = (perf_counter() - start) * 1000
         start = perf_counter()
         try:
@@ -133,10 +140,25 @@ class ParallelRetriever:
             results = self.hybrid.render(query, dense, (), dense_ranks)
         snippets_ms = (perf_counter() - start) * 1000
         self.hybrid.check_context()
+        rerank_status: Literal['off', 'applied', 'skipped', 'error'] = 'off'
+        rerank_ms = 0.0
+        rrf_ids: tuple[int, ...] = ()
+        if self.reranker is not None:
+            rerank_status = 'skipped'
+            if decision.engine == 'hybrid' and len(results) > 1:
+                rrf_ids = tuple(item.article_id for item in results)
+                start = perf_counter()
+                try:
+                    results = self.reranker.rank(query, results)
+                    rerank_status = 'applied'
+                except RerankError as exc:
+                    rerank_status = 'error'
+                    LOGGER.warning('rerank_error: %s', exc)
+                rerank_ms = (perf_counter() - start) * 1000
         diagnostics = ParallelDiagnostics(decision, status, embedding_ms, qdrant_ms, lexical_ms,
                                           routing_ms, snippets_ms, self.hybrid.config.dense_weight,
                                           self.hybrid.config.lexical_weight if decision.engine == 'hybrid' else 0.0,
-                                          wait_ms)
+                                          wait_ms, rerank_status, rerank_ms, rrf_ids)
         # журнал не содержит исходного запроса, ключей, текстов статей или векторов
         LOGGER.info('parallel_search route=%s reason=%s version=%s lexical_status=%s '
                     'embedding_ms=%.1f qdrant_ms=%.1f lexical_ms=%s routing_ms=%.1f snippets_ms=%.1f '
@@ -145,4 +167,4 @@ class ParallelRetriever:
                     round(lexical_ms, 1) if lexical_ms is not None else None, routing_ms, snippets_ms,
                     diagnostics.dense_weight, diagnostics.lexical_weight, decision.features.title_coverage,
                     decision.features.lexical_gap, decision.features.top5_overlap)
-        return ParallelRun(tuple(results), diagnostics)
+        return ParallelRun(tuple(results[:top_k]), diagnostics)
