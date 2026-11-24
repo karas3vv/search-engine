@@ -4,12 +4,14 @@ from __future__ import annotations
 import argparse
 import csv
 from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path
 from statistics import mean, median
 
 import requests
 
 from habr_search.evaluation.comparison_data import load_context, load_judgments
+from habr_search.evaluation.evaluate import load_queries
 from habr_search.evaluation.ranking_metrics import RankedDocument, evaluate_ranking
 from habr_search.web.app import HealthResponse, SearchResponse
 
@@ -19,11 +21,19 @@ METRICS = ('Precision@5', 'nDCG@5', 'Recall@10', 'nDCG@10')
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--from-run', type=Path, required=True)
-    parser.add_argument('--qrels', type=Path, required=True)
+    parser.add_argument('--queries', type=Path, help='новые запросы для того же корпуса')
+    parser.add_argument('--qrels', type=Path, help='дополнительная разметка запросов')
     parser.add_argument('--output', type=Path, required=True, help='новый csv с результатами по запросам')
     parser.add_argument('--server', default='http://127.0.0.1:8000')
     args = parser.parse_args()
     context = load_context(args.from_run)
+    if args.queries is not None:
+        cases = load_queries(args.queries)
+        if any(not set(case.relevant_ids) <= context.universe for case in cases):
+            parser.error('в запросах указан id статьи вне корпуса')
+        context = replace(context, cases=tuple(cases))
+    elif args.qrels is None:
+        parser.error('для исходного сравнения укажите --qrels')
     labels = load_judgments(context, args.qrels)
     totals: dict[tuple[str, str], list[float]] = defaultdict(list)
     timings: list[float] = []
